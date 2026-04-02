@@ -26,10 +26,14 @@ func (c *AuthLogin) Help() string {
 	OAuth token is cached locally so you don't need to log in again until
 	the token expires.
 
-	Options:
+	No configuration is needed — just run:
 
-	  -oauth-client-id  OAuth 2.0 client ID (required)
-	  -oauth-scopes     OAuth 2.0 scopes (comma-separated, default: read,write)
+	  pd auth login
+
+	Options (all optional):
+
+	  -oauth-client-id  Override the default OAuth client ID
+	  -oauth-scopes     Override scopes (comma-separated, default: read,write)
 	  -loglevel         Logging level
 `
 	return strings.TrimSpace(helpText)
@@ -40,48 +44,22 @@ func (c *AuthLogin) Synopsis() string {
 }
 
 func (c *AuthLogin) Run(args []string) int {
-	var oauthClientID string
-	var oauthScopes string
-	var loglevel string
-
 	flags := c.Meta.FlagSet("auth login")
 	flags.Usage = func() { fmt.Println(c.Help()) }
-	flags.StringVar(&oauthClientID, "oauth-client-id", "", "OAuth 2.0 client ID")
-	flags.StringVar(&oauthScopes, "oauth-scopes", "", "OAuth 2.0 scopes (comma-separated)")
-	flags.StringVar(&loglevel, "loglevel", "", "Logging level")
 
 	if err := flags.Parse(args); err != nil {
 		log.Error(err)
 		return 1
 	}
 
-	// Also try loading from config
+	// Load config for any overrides
 	c.Meta.setupLogging()
 	if err := c.Meta.loadConfig(); err != nil {
 		log.Debug("Could not load config: ", err)
 	}
 
-	// CLI flags override config
-	if oauthClientID != "" {
-		c.Meta.OAuthClientID = oauthClientID
-	}
-	if oauthScopes != "" {
-		c.Meta.OAuthScopes = oauthScopes
-	}
-
-	if c.Meta.OAuthClientID == "" {
-		log.Error("--oauth-client-id is required")
-		fmt.Println(c.Help())
-		return 1
-	}
-
-	scopes := []string{"read", "write"}
-	if c.Meta.OAuthScopes != "" {
-		scopes = strings.Split(c.Meta.OAuthScopes, ",")
-		for i := range scopes {
-			scopes[i] = strings.TrimSpace(scopes[i])
-		}
-	}
+	clientID := c.Meta.resolveOAuthClientID()
+	scopes := c.Meta.resolveOAuthScopes()
 
 	tokenPath, err := pagerduty.DefaultOAuthTokenPath()
 	if err != nil {
@@ -90,7 +68,7 @@ func (c *AuthLogin) Run(args []string) int {
 	}
 
 	cfg := pagerduty.AuthCodeTokenSourceConfig{
-		ClientID:      c.Meta.OAuthClientID,
+		ClientID:      clientID,
 		Scopes:        scopes,
 		TokenFilePath: tokenPath,
 		OpenBrowser:   openBrowser,
@@ -110,10 +88,10 @@ func (c *AuthLogin) Run(args []string) int {
 	if !tok.Expiry.IsZero() {
 		fmt.Fprintf(flags.Output(), "  Token expires: %s\n", tok.Expiry.Format("2006-01-02 15:04:05 MST"))
 	}
-	fmt.Fprintf(flags.Output(), "\nYou can now use -oauth -oauth-client-id=%s with any pd command,\n", c.Meta.OAuthClientID)
-	fmt.Fprintf(flags.Output(), "or add the following to ~/.pd.yml:\n\n")
+	fmt.Fprintf(flags.Output(), "\nYou can now use any pd command with -oauth, e.g.:\n\n")
+	fmt.Fprintf(flags.Output(), "  pd incident list -oauth\n\n")
+	fmt.Fprintf(flags.Output(), "Or add to ~/.pd.yml to make it the default:\n\n")
 	fmt.Fprintf(flags.Output(), "  oauth: true\n")
-	fmt.Fprintf(flags.Output(), "  oauth_client_id: %s\n", c.Meta.OAuthClientID)
 
 	return 0
 }

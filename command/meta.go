@@ -45,9 +45,9 @@ func (m *Meta) FlagSet(n string) *flag.FlagSet {
 	f := flag.NewFlagSet(n, flag.ContinueOnError)
 	f.StringVar(&m.Authtoken, "authtoken", "", "PagerDuty API authentication token")
 	f.StringVar(&m.Loglevel, "loglevel", "", "Logging level")
-	f.BoolVar(&m.UseOAuth, "oauth", false, "Use OAuth 2.0 browser-based authentication (no token on disk required)")
-	f.StringVar(&m.OAuthClientID, "oauth-client-id", "", "OAuth 2.0 client ID (required with --oauth)")
-	f.StringVar(&m.OAuthScopes, "oauth-scopes", "", "OAuth 2.0 scopes (comma-separated, default: read write)")
+	f.BoolVar(&m.UseOAuth, "oauth", false, "Use OAuth 2.0 browser-based authentication (no token required)")
+	f.StringVar(&m.OAuthClientID, "oauth-client-id", "", "Override the default OAuth 2.0 client ID")
+	f.StringVar(&m.OAuthScopes, "oauth-scopes", "", "Override OAuth 2.0 scopes (comma-separated)")
 	return f
 }
 
@@ -64,16 +64,11 @@ func (m *Meta) oauthClient() *pagerduty.Client {
 		log.Fatalf("Failed to determine OAuth token path: %v", err)
 	}
 
-	scopes := []string{"read", "write"}
-	if m.OAuthScopes != "" {
-		scopes = strings.Split(m.OAuthScopes, ",")
-		for i := range scopes {
-			scopes[i] = strings.TrimSpace(scopes[i])
-		}
-	}
+	clientID := m.resolveOAuthClientID()
+	scopes := m.resolveOAuthScopes()
 
 	cfg := pagerduty.AuthCodeTokenSourceConfig{
-		ClientID:      m.OAuthClientID,
+		ClientID:      clientID,
 		Scopes:        scopes,
 		TokenFilePath: tokenPath,
 		OpenBrowser:   openBrowser,
@@ -82,28 +77,48 @@ func (m *Meta) oauthClient() *pagerduty.Client {
 	return pagerduty.NewClient("", pagerduty.WithAuthCodeOAuth(context.Background(), cfg))
 }
 
+// resolveOAuthClientID returns the OAuth client ID to use, preferring
+// explicit overrides but falling back to the built-in default.
+func (m *Meta) resolveOAuthClientID() string {
+	if m.OAuthClientID != "" {
+		return m.OAuthClientID
+	}
+	return defaultOAuthClientID
+}
+
+// resolveOAuthScopes returns the OAuth scopes to use, preferring
+// explicit overrides but falling back to the built-in defaults.
+func (m *Meta) resolveOAuthScopes() []string {
+	if m.OAuthScopes != "" {
+		parts := strings.Split(m.OAuthScopes, ",")
+		for i := range parts {
+			parts[i] = strings.TrimSpace(parts[i])
+		}
+		return parts
+	}
+	return defaultOAuthScopes
+}
+
 func (m *Meta) Help() string {
 	helpText := `
 	Common options:
 
-	-authtoken    PagerDuty API authentication token
-	-loglevel     Logging level
-	-oauth        Use OAuth 2.0 browser-based authentication
-	-oauth-client-id  OAuth 2.0 client ID (required with -oauth)
-	-oauth-scopes     OAuth 2.0 scopes (comma-separated, default: read,write)
+	-authtoken        PagerDuty API authentication token
+	-loglevel         Logging level
+	-oauth            Use OAuth 2.0 browser-based authentication (no token required)
+	-oauth-client-id  Override the default OAuth 2.0 client ID (optional)
+	-oauth-scopes     Override OAuth 2.0 scopes (comma-separated, optional)
 `
 	return strings.TrimSpace(helpText)
 }
 
 func (m *Meta) validate() error {
 	if m.UseOAuth {
-		if m.OAuthClientID == "" {
-			return fmt.Errorf("--oauth-client-id is required when using --oauth")
-		}
+		// No additional config needed — we have a built-in client ID
 		return nil
 	}
 	if m.Authtoken == "" {
-		return fmt.Errorf("Authtoken can not be blank. Use -authtoken or -oauth for browser-based login.")
+		return fmt.Errorf("authentication required: use -authtoken or -oauth (browser-based login)")
 	}
 	return nil
 }

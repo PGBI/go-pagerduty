@@ -13,6 +13,9 @@ const (
 
 func loadCommands() map[string]cli.CommandFactory {
 	return map[string]cli.CommandFactory{
+		"auth login":  AuthLoginCommand,
+		"auth logout": AuthLogoutCommand,
+
 		"ability list":  AbilityListCommand,
 		"ability test":  AbilityTestCommand,
 		"addon list":    AddonListCommand,

@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/mitchellh/go-homedir"
@@ -29,8 +32,11 @@ func (a *ArrayFlags) Set(v string) error {
 }
 
 type Meta struct {
-	Authtoken string
-	Loglevel  string
+	Authtoken     string `yaml:"authtoken"`
+	Loglevel      string `yaml:"loglevel"`
+	UseOAuth      bool   `yaml:"oauth"`
+	OAuthClientID string `yaml:"oauth_client_id"`
+	OAuthScopes   string `yaml:"oauth_scopes"`
 }
 
 type FlagSetFlags uint
@@ -39,26 +45,65 @@ func (m *Meta) FlagSet(n string) *flag.FlagSet {
 	f := flag.NewFlagSet(n, flag.ContinueOnError)
 	f.StringVar(&m.Authtoken, "authtoken", "", "PagerDuty API authentication token")
 	f.StringVar(&m.Loglevel, "loglevel", "", "Logging level")
+	f.BoolVar(&m.UseOAuth, "oauth", false, "Use OAuth 2.0 browser-based authentication (no token on disk required)")
+	f.StringVar(&m.OAuthClientID, "oauth-client-id", "", "OAuth 2.0 client ID (required with --oauth)")
+	f.StringVar(&m.OAuthScopes, "oauth-scopes", "", "OAuth 2.0 scopes (comma-separated, default: read write)")
 	return f
 }
 
 func (m *Meta) Client() *pagerduty.Client {
+	if m.UseOAuth {
+		return m.oauthClient()
+	}
 	return pagerduty.NewClient(m.Authtoken)
+}
+
+func (m *Meta) oauthClient() *pagerduty.Client {
+	tokenPath, err := pagerduty.DefaultOAuthTokenPath()
+	if err != nil {
+		log.Fatalf("Failed to determine OAuth token path: %v", err)
+	}
+
+	scopes := []string{"read", "write"}
+	if m.OAuthScopes != "" {
+		scopes = strings.Split(m.OAuthScopes, ",")
+		for i := range scopes {
+			scopes[i] = strings.TrimSpace(scopes[i])
+		}
+	}
+
+	cfg := pagerduty.AuthCodeTokenSourceConfig{
+		ClientID:      m.OAuthClientID,
+		Scopes:        scopes,
+		TokenFilePath: tokenPath,
+		OpenBrowser:   openBrowser,
+	}
+
+	return pagerduty.NewClient("", pagerduty.WithAuthCodeOAuth(context.Background(), cfg))
 }
 
 func (m *Meta) Help() string {
 	helpText := `
 	Common options:
 
-	-authtoken PagerDuty API authentication token
-	-loglevel Logging level
+	-authtoken    PagerDuty API authentication token
+	-loglevel     Logging level
+	-oauth        Use OAuth 2.0 browser-based authentication
+	-oauth-client-id  OAuth 2.0 client ID (required with -oauth)
+	-oauth-scopes     OAuth 2.0 scopes (comma-separated, default: read,write)
 `
 	return strings.TrimSpace(helpText)
 }
 
 func (m *Meta) validate() error {
+	if m.UseOAuth {
+		if m.OAuthClientID == "" {
+			return fmt.Errorf("--oauth-client-id is required when using --oauth")
+		}
+		return nil
+	}
 	if m.Authtoken == "" {
-		return fmt.Errorf("Authtoken can not be blank")
+		return fmt.Errorf("Authtoken can not be blank. Use -authtoken or -oauth for browser-based login.")
 	}
 	return nil
 }
@@ -108,5 +153,31 @@ func (m *Meta) loadConfig() error {
 	if m.Loglevel == "" {
 		m.Loglevel = other.Loglevel
 	}
+	// Load OAuth settings from config file if not set via flags
+	if !m.UseOAuth && other.UseOAuth {
+		m.UseOAuth = other.UseOAuth
+	}
+	if m.OAuthClientID == "" {
+		m.OAuthClientID = other.OAuthClientID
+	}
+	if m.OAuthScopes == "" {
+		m.OAuthScopes = other.OAuthScopes
+	}
 	return nil
+}
+
+// openBrowser opens the specified URL in the user's default browser.
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return fmt.Errorf("unsupported platform %s", runtime.GOOS)
+	}
+	return cmd.Start()
 }
